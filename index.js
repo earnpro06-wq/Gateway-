@@ -18,54 +18,57 @@ app.use(bodyParser.urlencoded({ extended: true }));
 
 // ২. পেমেন্ট রিসিভ করার এন্ডপয়েন্ট
 app.post('/sms-webhook', async (req, res) => {
-    // ডাটা রিসিভ করা (বডি থেকে টেক্সট বের করা)
-    let sms = req.body.text || req.body.message || req.body.body || ""; 
+    
+    // ডাটা রিসিভ করার লজিক (JSON অবজেক্ট হ্যান্ডেল করার জন্য)
+    let rawSms = req.body.text || req.body.message || req.body.body || "";
+    
+    // যদি পুরো বডিটাই স্ট্রিং হয় বা অবজেক্ট হিসেবে আসে
+    if (typeof req.body === 'object' && !rawSms) {
+        rawSms = JSON.stringify(req.body);
+    }
+    
     const sender = req.body.from || req.body.sender || "Unknown";
 
-    console.log(`পেমেন্ট SMS এসেছে: ${sms}`);
+    console.log(`রিসিভড ডাটা: ${rawSms}`);
 
-    if (!sms) {
-        console.log("Error: No message content received.");
-        return res.status(400).send("No content found");
-    }
+    // পেমেন্ট যাচাইয়ের জন্য ছোট হাতের অক্ষরে রূপান্তর
+    const smsLower = rawSms.toLowerCase();
 
-    // এসএমএস-টিকে ছোট হাতের অক্ষরে কনভার্ট করে চেক করা (যাতে TrxID বা trxID দুইটাই ধরে)
-    const smsLower = sms.toLowerCase();
-
-    // পেমেন্ট যাচাই করা (বিকাশ, নগদ, রকেট এবং নতুন ছোট হাতের trxID)
-    if (smsLower.includes("trxid") || smsLower.includes("transaction id") || smsLower.includes("trx")) {
+    // কি-ওয়ার্ড চেক (বিকাশ বা অন্য পেমেন্টের ক্ষেত্রে trxid, trx, বা received থাকা জরুরি)
+    if (smsLower.includes("trxid") || smsLower.includes("trx") || smsLower.includes("transaction")) {
         try {
             // ৩. Regex দিয়ে TrxID এবং Amount বের করা
-            // i ফ্ল্যাগ যোগ করা হয়েছে যাতে ছোট/বড় সব অক্ষর ধরে
-            const trxMatch = sms.match(/[0-9A-Z]{8,12}/i); 
-            const amountMatch = sms.match(/(?:Tk|Amount|টাকা|ট)\s?([0-9,.]+)/i);
+            // i ফ্ল্যাগ ব্যবহার করা হয়েছে যাতে ছোট/বড় সব অক্ষর ধরে
+            const trxMatch = rawSms.match(/[0-9A-Z]{8,12}/i); 
+            const amountMatch = rawSms.match(/(?:Tk|Amount|টাকা|ট|amount)\s?([0-9,.]+)/i);
 
             const trxId = trxMatch ? trxMatch[0] : null;
             let amount = amountMatch ? amountMatch[1].replace(/,/g, '') : "0";
 
-            if (!trxId) {
-                console.log("TrxID খুঁজে পাওয়া যায়নি।");
-                return res.status(200).send("No TrxID found in message");
+            if (trxId) {
+                // ৪. Cloud Firestore-এ ডাটা সেভ
+                // doc(trxId) ব্যবহার করা হয়েছে যাতে ডুপ্লিকেট পেমেন্ট না হয়
+                await db.collection('autopayments').doc(trxId).set({
+                    amount: parseFloat(amount),
+                    sender: sender,
+                    sms_full: rawSms,
+                    status: "Success",
+                    timestamp: admin.firestore.FieldValue.serverTimestamp()
+                });
+
+                console.log(`✅ সফল! Firestore-এ সেভ হয়েছে: TrxID ${trxId}, Amount: ${amount}`);
+                return res.status(200).send("Success");
+            } else {
+                console.log("❌ কি-ওয়ার্ড মিললেও TrxID খুঁজে পাওয়া যায়নি।");
+                return res.status(200).send("TrxID not found");
             }
-
-            // ৪. Cloud Firestore-এ ডাটা সেভ
-            await db.collection('autopayments').doc(trxId).set({
-                amount: parseFloat(amount),
-                sender: sender,
-                sms_full: sms,
-                status: "Success",
-                timestamp: admin.firestore.FieldValue.serverTimestamp()
-            });
-
-            console.log(`সফল! Firestore-এ সেভ হয়েছে: TrxID ${trxId}, Amount: ${amount}`);
-            res.status(200).send("Success");
         } catch (error) {
-            console.error("Error saving to Firestore:", error);
-            res.status(500).send("Error saving data");
+            console.error("❌ Firestore Error:", error);
+            return res.status(500).send("Error saving data");
         }
     } else {
-        console.log("এটি কোনো পেমেন্ট এসএমএস নয় বা কি-ওয়ার্ড মেলেনি।");
-        res.status(200).send("Not a payment SMS");
+        console.log("⚠️ এটি পেমেন্ট এসএমএস নয় (কি-ওয়ার্ড মেলেনি)।");
+        return res.status(200).send("Not a payment SMS");
     }
 });
 
