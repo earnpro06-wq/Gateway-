@@ -3,7 +3,7 @@ const express = require('express');
 const bodyParser = require('body-parser');
 
 // ১. ফায়ারবেস কানেকশন (আপনার নতুন জেনারেট করা ফাইল অনুযায়ী আপডেট করা হয়েছে)
-const serviceAccount = require('./bet-baji-vip-firebase-adminsdk-fbsvc-28b3cb38ac.json');
+const serviceAccount = require('bet-baji-vip-firebase-adminsdk-fbsvc-28b3cb38ac.json');
 
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount)
